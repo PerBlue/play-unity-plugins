@@ -29,7 +29,7 @@ namespace Google.Play.Billing
     /// <summary>
     /// Implements Unity defined IStore, IGooglePlayStoreExtensions, and IGooglePlayConfiguration.
     /// </summary>
-    public class GooglePlayStoreImpl : IStore, IGooglePlayStoreExtensions, IGooglePlayConfiguration
+    public class GooglePlayStoreImpl : IStore, IGooglePlayStoreExtensions, IGooglePlayConfiguration, ITransactionHistoryExtensions
     {
         private AndroidJavaObject _billingClient;
         private BillingClientStateListener _billingClientStateListener;
@@ -61,6 +61,9 @@ namespace Google.Play.Billing
 
         // Thread-safe variables for IGooglePlayConfiguration.
         private volatile bool _deferredPurchasesEnabled = false;
+
+        private PurchaseFailureDescription _lastPurchaseFailureDescription;
+        private StoreSpecificPurchaseErrorCode _lastStoreSpecificPurchaseErrorCode;
 
         public GooglePlayStoreImpl(GooglePlayBillingUtil googlePlayBillingUtil)
         {
@@ -145,11 +148,14 @@ namespace Google.Play.Billing
             if (_productInPurchaseFlow != null)
             {
                 _billingUtil.RunOnMainThread(() =>
-                    _callback.OnPurchaseFailed(
-                        new PurchaseFailureDescription(
-                            product.storeSpecificId, PurchaseFailureReason.ExistingPurchasePending,
-                            string.Format("A purchase for {0} is already in progress.",
-                                _productInPurchaseFlow.id))));
+                {
+                    _lastPurchaseFailureDescription = new PurchaseFailureDescription(
+                        product.storeSpecificId, PurchaseFailureReason.ExistingPurchasePending,
+                        string.Format("A purchase for {0} is already in progress.",
+                            _productInPurchaseFlow.id));
+                    _lastStoreSpecificPurchaseErrorCode = StoreSpecificPurchaseErrorCode.Unknown;
+                    _callback.OnPurchaseFailed(_lastPurchaseFailureDescription);
+                });
                 return;
             }
 
@@ -169,11 +175,13 @@ namespace Google.Play.Billing
                 {
                     // A SKU that has ProductDefinition should appear in the inventory. If not, the issue could be
                     // transient so that it asks to try again later.
-                    _callback.OnPurchaseFailed(
-                        new PurchaseFailureDescription(product.storeSpecificId,
-                            PurchaseFailureReason.ProductUnavailable,
-                            string.Format("Cannot purchase {0} now, please try again later.",
-                                _productInPurchaseFlow.id)));
+                    _lastPurchaseFailureDescription = new PurchaseFailureDescription(product.storeSpecificId,
+                        PurchaseFailureReason.ProductUnavailable,
+                        string.Format("Cannot purchase {0} now, please try again later.",
+                            _productInPurchaseFlow.id));
+                    _lastStoreSpecificPurchaseErrorCode =
+                        StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_ITEM_UNAVAILABLE;
+                    _callback.OnPurchaseFailed(_lastPurchaseFailureDescription);
                     return;
                 }
 
@@ -304,11 +312,15 @@ namespace Google.Play.Billing
             if (_productInPurchaseFlow != null)
             {
                 _billingUtil.RunOnMainThread(() =>
-                    _callback.OnPurchaseFailed(
-                        new PurchaseFailureDescription(newProduct.definition.storeSpecificId,
-                            PurchaseFailureReason.ExistingPurchasePending,
-                            string.Format("A purchase for {0} is already in progress.",
-                                _productInPurchaseFlow.id))));
+                {
+                    _lastPurchaseFailureDescription = new PurchaseFailureDescription(
+                        newProduct.definition.storeSpecificId,
+                        PurchaseFailureReason.ExistingPurchasePending,
+                        string.Format("A purchase for {0} is already in progress.",
+                            _productInPurchaseFlow.id));
+                    _lastStoreSpecificPurchaseErrorCode = StoreSpecificPurchaseErrorCode.Unknown;
+                    _callback.OnPurchaseFailed(_lastPurchaseFailureDescription);
+                });
                 return;
             }
 
@@ -320,11 +332,14 @@ namespace Google.Play.Billing
                 {
                     // A SKU that has ProductDefinition should appear in the inventory. If not, the issue could be
                     // transient so that it asks to try again later.
-                    _callback.OnPurchaseFailed(
-                        new PurchaseFailureDescription(newProduct.definition.storeSpecificId,
-                            PurchaseFailureReason.ProductUnavailable,
-                            string.Format("Cannot update subscription for {0} now, please try again later.",
-                                _productInPurchaseFlow.id)));
+                    _lastPurchaseFailureDescription = new PurchaseFailureDescription(
+                        newProduct.definition.storeSpecificId,
+                        PurchaseFailureReason.ProductUnavailable,
+                        string.Format("Cannot update subscription for {0} now, please try again later.",
+                            _productInPurchaseFlow.id));
+                    _lastStoreSpecificPurchaseErrorCode =
+                        StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_ITEM_UNAVAILABLE;
+                    _callback.OnPurchaseFailed(_lastPurchaseFailureDescription);
                     return;
                 }
 
@@ -589,25 +604,53 @@ namespace Google.Play.Billing
                 _billingUtil.LogWarningFormat("Purchase failed with error code '{0}' and debug message: '{1}'",
                     responseCode, debugMessage);
                 PurchaseFailureReason purchaseFailureReason;
+                StoreSpecificPurchaseErrorCode storeSpecificPurchaseErrorCode;
                 switch (responseCode)
                 {
                     case BillingResponseCode.UserCancelled:
                         purchaseFailureReason = PurchaseFailureReason.UserCancelled;
+                        storeSpecificPurchaseErrorCode =
+                            StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_USER_CANCELED;
                         break;
                     case BillingResponseCode.ServiceTimeout:
                     case BillingResponseCode.ServiceDisconnected:
                     case BillingResponseCode.ServiceUnavailable:
+                        purchaseFailureReason = PurchaseFailureReason.PurchasingUnavailable;
+                        storeSpecificPurchaseErrorCode =
+                            StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_SERVICE_UNAVAILABLE;
+                        break;
                     case BillingResponseCode.BillingUnavailable:
                         purchaseFailureReason = PurchaseFailureReason.PurchasingUnavailable;
+                        storeSpecificPurchaseErrorCode =
+                            StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_BILLING_UNAVAILABLE;
                         break;
                     case BillingResponseCode.ItemUnavailable:
                         purchaseFailureReason = PurchaseFailureReason.ProductUnavailable;
+                        storeSpecificPurchaseErrorCode =
+                            StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_ITEM_UNAVAILABLE;
                         break;
                     case BillingResponseCode.ItemAlreadyOwned:
                         purchaseFailureReason = PurchaseFailureReason.DuplicateTransaction;
+                        storeSpecificPurchaseErrorCode =
+                            StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_ITEM_ALREADY_OWNED;
+                        break;
+                    case BillingResponseCode.Error:
+                        purchaseFailureReason = PurchaseFailureReason.Unknown;
+                        storeSpecificPurchaseErrorCode = StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_ERROR;
+                        break;
+                    case BillingResponseCode.DeveloperError:
+                        purchaseFailureReason = PurchaseFailureReason.Unknown;
+                        storeSpecificPurchaseErrorCode =
+                            StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_DEVELOPER_ERROR;
+                        break;
+                    case BillingResponseCode.ItemNotOwned:
+                        purchaseFailureReason = PurchaseFailureReason.Unknown;
+                        storeSpecificPurchaseErrorCode =
+                            StoreSpecificPurchaseErrorCode.BILLING_RESPONSE_RESULT_ITEM_NOT_OWNED;
                         break;
                     default:
                         purchaseFailureReason = PurchaseFailureReason.Unknown;
+                        storeSpecificPurchaseErrorCode = StoreSpecificPurchaseErrorCode.Unknown;
                         break;
                 }
 
@@ -615,8 +658,12 @@ namespace Google.Play.Billing
                 // _productInPurchaseFlow will get cleaned up immediately in this thread.
                 var productId = _productInPurchaseFlow.storeSpecificId;
                 _billingUtil.RunOnMainThread(() =>
-                    _callback.OnPurchaseFailed(
-                        new PurchaseFailureDescription(productId, purchaseFailureReason, debugMessage)));
+                {
+                    _lastPurchaseFailureDescription =
+                        new PurchaseFailureDescription(productId, purchaseFailureReason, debugMessage);
+                    _lastStoreSpecificPurchaseErrorCode = storeSpecificPurchaseErrorCode;
+                    _callback.OnPurchaseFailed(_lastPurchaseFailureDescription);
+                });
             }
 
             _productInPurchaseFlow = null;
@@ -756,6 +803,16 @@ namespace Google.Play.Billing
             }
 
             callback.Invoke(responseCode == BillingResponseCode.Ok);
+        }
+
+        public PurchaseFailureDescription GetLastPurchaseFailureDescription()
+        {
+            throw new NotImplementedException();
+        }
+
+        public StoreSpecificPurchaseErrorCode GetLastStoreSpecificPurchaseErrorCode()
+        {
+            throw new NotImplementedException();
         }
     }
 }
