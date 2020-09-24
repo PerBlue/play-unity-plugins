@@ -807,12 +807,12 @@ namespace Google.Play.Billing
 
         public PurchaseFailureDescription GetLastPurchaseFailureDescription()
         {
-            throw new NotImplementedException();
+            return _lastPurchaseFailureDescription;
         }
 
         public StoreSpecificPurchaseErrorCode GetLastStoreSpecificPurchaseErrorCode()
         {
-            throw new NotImplementedException();
+            return _lastStoreSpecificPurchaseErrorCode;
         }
     }
 }
