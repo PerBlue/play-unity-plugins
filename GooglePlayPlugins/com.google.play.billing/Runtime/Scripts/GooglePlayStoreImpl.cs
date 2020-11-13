@@ -266,14 +266,9 @@ namespace Google.Play.Billing
 
         public void EndConnection()
         {
-            if (!IsGooglePlayInAppBillingServiceAvailable())
-            {
-                return;
-            }
-
             _productInPurchaseFlow = null;
             _deferredPurchaseListener = null;
-            _billingClient.Call(Constants.BillingClientEndConnectionMethod);
+            _billingClient?.Call(Constants.BillingClientEndConnectionMethod);
             _billingClientReady = false;
         }
 
